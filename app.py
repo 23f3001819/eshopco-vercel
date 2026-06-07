@@ -6,6 +6,14 @@ from typing import List
 
 app = FastAPI()
 
+# 1. Define your exact CORS headers dictionary here
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Expose-Headers": "Access-Control-Allow-Origin",
+}
+
 def calculate_p95(data: List[float]) -> float:
     if not data: return 0.0
     sorted_data = sorted(data)
@@ -16,39 +24,45 @@ def calculate_p95(data: List[float]) -> float:
         return sorted_data[int(k)]
     return sorted_data[int(f)] * (c - k) + sorted_data[int(c)] * (k - f)
 
-# The ultimate catch-all route. It accepts any path and any method.
 @app.api_route("/{full_path:path}", methods=["GET", "POST", "OPTIONS"])
 async def analyze_latency(request: Request, full_path: str):
     
-    # 1. Handle Preflight OPTIONS requests directly
+    # 2. Inject headers into the OPTIONS (Preflight) response
     if request.method == "OPTIONS":
-        return Response(headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "*",
-            "Access-Control-Allow-Headers": "*"
-        })
+        return Response(headers=CORS_HEADERS)
         
-    # 2. Handle GET requests (Health check)
+    # 3. Inject headers into the GET (Health check) response
     if request.method == "GET":
-        response = Response(content=json.dumps({"status": "alive"}), media_type="application/json")
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        return response
+        return Response(
+            content=json.dumps({"status": "alive"}), 
+            media_type="application/json",
+            headers=CORS_HEADERS
+        )
         
-    # 3. Handle the actual POST request safely
+    # 4. Handle the POST request payload
     try:
         payload = await request.json()
         regions = payload.get("regions", [])
         threshold_ms = payload.get("threshold_ms", 0)
     except Exception:
-        # If the grader sends bad JSON, still return the CORS header!
-        return Response(content=json.dumps({"error": "Invalid JSON format"}), status_code=400, headers={"Access-Control-Allow-Origin": "*"})
+        # Inject headers even if the JSON is bad!
+        return Response(
+            content=json.dumps({"error": "Invalid JSON format"}), 
+            status_code=400, 
+            headers=CORS_HEADERS
+        )
 
     file_path = os.path.join(os.path.dirname(__file__), 'telemetry.json')
     try:
         with open(file_path, 'r') as file:
             telemetry = json.load(file)
     except Exception as e:
-        return Response(content=json.dumps({"error": f"Failed to load telemetry: {e}"}), headers={"Access-Control-Allow-Origin": "*"})
+        # Inject headers if the file fails to load
+        return Response(
+            content=json.dumps({"error": f"Failed to load telemetry: {e}"}), 
+            status_code=500,
+            headers=CORS_HEADERS
+        )
 
     results = {}
     for region in regions:
@@ -59,20 +73,3 @@ async def analyze_latency(request: Request, full_path: str):
         if not latencies:
             results[region] = {"avg_latency": 0, "p95_latency": 0, "avg_uptime": 0, "breaches": 0}
             continue
-
-        avg_lat = sum(latencies) / len(latencies)
-        p95_lat = calculate_p95(latencies)
-        avg_up = sum(uptimes) / len(uptimes)
-        breaches = sum(1 for lat in latencies if lat > threshold_ms)
-
-        results[region] = {
-            "avg_latency": round(avg_lat, 2),
-            "p95_latency": round(p95_lat, 2),
-            "avg_uptime": round(avg_up, 4),
-            "breaches": breaches
-        }
-        
-    # 4. Return the final successful response WITH the CORS header explicitly attached
-    response = Response(content=json.dumps(results), media_type="application/json")
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    return response
